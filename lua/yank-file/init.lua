@@ -3,8 +3,7 @@ local yank_file = {}
 local defaults = {
   copy_keymap = "Y",
   paste_keymap = "P",
-  notify = true,
-  overwrite = false,
+  debug = false,
 }
 
 yank_file.config = vim.deepcopy(defaults)
@@ -132,7 +131,7 @@ function yank_file.paste()
 
   local dest_path = vim.fs.joinpath(target_dir, copied.fileName)
 
-  if vim.fn.filereadable(dest_path) == 1 and not yank_file.config.overwrite then
+  if vim.fn.filereadable(dest_path) == 1 then
     notify(("File already exists: %s"):format(dest_path), vim.log.levels.WARN)
     return
   end
