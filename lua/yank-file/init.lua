@@ -1,16 +1,20 @@
 local yank_file = {}
 
 local defaults = {
-  keymap = "Y",
-  use_full_path = false,
-  register = "+",
+  copy_keymap = "Y",
+  paste_keymap = "P",
   notify = true,
+  overwrite = false,
 }
 
 yank_file.config = vim.deepcopy(defaults)
 
-local function merged_config(opts)
-  return vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
+yank_file.state = {
+  copied_file = nil,
+}
+
+function yank_file.setup(opts)
+  yank_file.config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
 end
 
 local function notify(msg, level)
@@ -19,20 +23,20 @@ local function notify(msg, level)
   end
 
   vim.notify(msg, level or vim.log.levels.INFO, {
-    title = "debug_yank_file"
+    title = "yank_file",
   })
 end
 
 local function get_node()
   local ok, api = pcall(require, "nvim-tree.api")
   if not ok then
-    notify("nvim-tree not found", vim.log.levels.ERROR)
+    notify("nvim-tree.api not found", vim.log.levels.ERROR)
     return nil, nil
   end
 
   local node = api.tree.get_node_under_cursor()
   if not node then
-    notify("No file under cursor", vim.log.levels.WARN)
+    notify("No node under cursor", vim.log.levels.WARN)
     return nil, api
   end
 
@@ -46,6 +50,37 @@ local function read_file(path)
   end
 
   return table.concat(lines, "\n"), nil
+end
+
+local function write_file(path, content)
+  local dir = vim.fn.fnamemodify(path, ":h")
+  if dir ~= "." then
+    vim.fn.mkdir(dir, "p")
+  end
+
+  local lines = {}
+  if content ~= "" then
+    lines = vim.split(content, "\n", { plain = true })
+  end
+
+  local ok, err = pcall(vim.fn.writefile, lines, path)
+  if not ok then
+    return nil, ("Could not write file: %s (%s)"):format(path, err or "unknown error")
+  end
+
+  return true
+end
+
+local function get_target_dir(node)
+  if node.type == "directory" then
+    return node.absolute_path
+  end
+
+  if node.type == "file" then
+    return vim.fn.fnamemodify(node.absolute_path, ":h")
+  end
+
+  return nil
 end
 
 function yank_file.copy()
@@ -71,43 +106,62 @@ function yank_file.copy()
     return
   end
 
-  local name = yank_file.config.use_full_path and path or (node.name or vim.fn.fnamemodify(path, ":t"))
-  local payload = ("File: %s\n\n%s"):format(name, content)
+  yank_file.state.copied_file = {
+    fileName = node.name or vim.fn.fnamemodify(path, ":t"),
+    content = content,
+  }
+end
 
-  vim.fn.setreg(yank_file.config.register, payload)
-  vim.fn.setreg('"', payload)
+function yank_file.paste()
+  local node, api = get_node()
+  if not node then
+    return
+  end
+
+  local copied = yank_file.state.copied_file
+  if not copied then
+    notify("No copied file available", vim.log.levels.WARN)
+    return
+  end
+
+  local target_dir = get_target_dir(node)
+  if not target_dir or target_dir == "" then
+    notify("Could not determine target directory", vim.log.levels.ERROR)
+    return
+  end
+
+  local dest_path = vim.fs.joinpath(target_dir, copied.fileName)
+
+  if vim.fn.filereadable(dest_path) == 1 and not yank_file.config.overwrite then
+    notify(("File already exists: %s"):format(dest_path), vim.log.levels.WARN)
+    return
+  end
+
+  local ok, err = write_file(dest_path, copied.content)
+  if not ok then
+    notify(err, vim.log.levels.ERROR)
+    return
+  end
+
+  if api and api.tree and api.tree.reload then
+    api.tree.reload()
+  end
 end
 
 function yank_file.on_attach(bufnr)
-  local ok, api = pcall(require, "nvim-tree.api")
-  if not ok then
-    notify("nvim-tree.api not found", vim.log.levels.ERROR)
-    return
-  end
-
-  api.config.mappings.default_on_attach(bufnr)
-
-  vim.keymap.set("n", yank_file.config.keymap, yank_file.copy, {
+  vim.keymap.set("n", yank_file.config.copy_keymap, yank_file.copy, {
     buffer = bufnr,
     noremap = true,
     silent = true,
-    desc = "Copy file name and full file contents",
+    desc = "Copy file name and file contents",
   })
-end
 
-function yank_file.setup(opts)
-  yank_file.config = merged_config(opts)
-
-  local ok, nvim_tree = pcall(require, "nvim-tree")
-  if not ok then
-    notify("nvim-tree plugin not found", vim.log.levels.ERROR)
-    return
-  end
-
-  nvim_tree.setup({
-    on_attach = yank_file.on_attach,
+  vim.keymap.set("n", yank_file.config.paste_keymap, yank_file.paste, {
+    buffer = bufnr,
+    noremap = true,
+    silent = true,
+    desc = "Paste copied file into current directory",
   })
 end
 
 return yank_file
-
